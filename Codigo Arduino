@@ -1,0 +1,33 @@
+#include <MFRC522.h>
+#include <SPI.h>
+
+MFRC522 mfrc522 (53, 5);
+
+void setup () 
+{
+  Serial.begin (9600);
+  while (!Serial);
+  SPI.begin ();
+  mfrc522.PCD_Init();
+}
+
+void dataTarj (byte *buffer, byte bufferSize)
+{
+  for (byte i=0; i<bufferSize; i++)
+  {Serial.print(buffer[i]<0*10?"0":"");
+   Serial.print(buffer[i], HEX);
+   }
+}
+
+void loop()
+{
+  if (mfrc522.PICC_IsNewCardPresent())
+  {if (mfrc522.PICC_ReadCardSerial())
+    {Serial.print(F("NUMERO TARJETA "));
+  dataTarj(mfrc522.uid.uidByte, mfrc522.uid.size);
+  Serial.println();
+  mfrc522.PICC_HaltA();
+    }
+  }
+  delay(250);
+}
