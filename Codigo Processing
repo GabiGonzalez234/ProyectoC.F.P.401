@@ -1,0 +1,345 @@
+import processing.serial.*;
+
+Serial port;
+String data = "";
+
+PImage fondoCasino;
+
+boolean[] regionesOcupadas = {false, false, false, false};
+boolean[] figuraActiva = new boolean[16];
+int[] tipoFigura = new int[16];     // 0=elipse, 1=cuadrado, 2=triángulo, 3=rombo
+int[] regionAsignada = new int[16]; // -1 = sin región
+int[] animacionTiempo = new int[16];
+int duracionAnimacion = 400;
+
+boolean chanchoVaMostrado = false;
+int tiempoChanchoVa = 0;
+
+boolean parpadeoVisible = true;
+int tiempoUltimoParpadeo = 0;
+int intervaloParpadeo = 300;
+
+// Modo debug
+boolean DEBUG_MODE = true;
+
+// IDs simulados de tarjetas RFID (reemplazá por las tarjeta que posea)
+String[] tarjetasRFID = {
+  "CBF4F5", "AA43545", "93AD525", "DC6565",
+  "2463525", "3CF7555", "B9B0525", "C4F64F5",
+  "5336535", "B5C0525", "715545", "3A5F555",
+  "237E535", "773D555", "C5F8525", "4435535"
+};
+
+void setup() {
+  fullScreen();
+  //size(800,400); 
+  fondoCasino = loadImage("casino.jpg");
+  for (int i = 0; i < 16; i++) {
+    tipoFigura[i] = i / 4;
+    regionAsignada[i] = -1;
+  }
+
+  // CAMBIAMOS "COM9" por el puerto correcto
+  port = new Serial(this, "COM9", 9600);
+  port.bufferUntil('\n');
+  
+  println("=== CHANCHO VA INICIADO ===");
+  println("Puerto: COM9");
+  println("Total tarjetas: " + tarjetasRFID.length);
+}
+
+void draw() {
+  background(0);
+  
+  // Se dibuja mejor el fondo con transparencia para ver mejor las figuras
+  if (fondoCasino != null) {
+    tint(255, 180); // Fondo más transparente
+    image(fondoCasino, 0, 0, width, height);
+    noTint();
+  }
+
+  // Se dinuja las figuras
+  int figurasActivas = 0;
+  for (int i = 0; i < 16; i++) {
+    if (figuraActiva[i] && regionAsignada[i] != -1) {
+      drawShape(tipoFigura[i], regionAsignada[i], animacionTiempo[i]);
+      figurasActivas++;
+    }
+  }
+
+  // Mensaje inicial 
+  if (contarRegionesOcupadas() < 4 && !chanchoVaMostrado) {
+    mostrarCartelInicio();
+  }
+
+  if (!chanchoVaMostrado && verificarChanchoVa()) {
+    chanchoVaMostrado = true;
+    tiempoChanchoVa = millis();
+    println("*** CHANCHO VA ACTIVADO ***");
+  }
+
+  if (chanchoVaMostrado) {
+    mostrarCartelChanchoVa();
+    if (millis() - tiempoChanchoVa >= 5000) {
+      chanchoVaMostrado = !chanchoVaMostrado;
+      for (int i = 0; i < 4; i++) {
+        regionesOcupadas[i]=false;
+      }
+      reiniciarJuego();
+      println("=== JUEGO REINICIADO ===");
+    }
+  }
+  
+  // Panel de debug
+  if (DEBUG_MODE) {
+    mostrarDebug(figurasActivas);
+  }
+}
+
+void serialEvent(Serial port) {
+  String input = port.readStringUntil('\n');
+  if (input != null) {
+    data = input.trim();
+    println(">> Tarjeta leída: " + data);
+
+
+// se realizo una correccion en esta parte del codigo 
+    String idTarjeta = data;
+    if (data.startsWith("NUMERO TARJETA ")) {
+      idTarjeta = data.substring(15); // Saltar "NUMERO TARJETA "
+      idTarjeta = idTarjeta.trim(); // Quitar espacios extra
+      println("   ID extraído: [" + idTarjeta + "]");
+    }
+    
+    int num = buscarFiguraPorRFID(idTarjeta);
+    if (num != -1) {
+      println("   → Figura #" + num + " (Tipo: " + tipoFigura[num] + ")");
+      toggleFigura(num);
+      println("   → Activa: " + figuraActiva[num] + " | Región: " + regionAsignada[num]);
+    } else {
+      println("   ✗ Tarjeta NO reconocida: [" + idTarjeta + "]");
+    }
+  }
+}
+
+int buscarFiguraPorRFID(String id) {
+  for (int i = 0; i < tarjetasRFID.length; i++) {
+    if (tarjetasRFID[i].equalsIgnoreCase(id)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void toggleFigura(int num) {
+  if (chanchoVaMostrado) {
+    println("   ✗ No se puede cambiar durante CHANCHO VA");
+    return;
+  }
+
+  if (figuraActiva[num]) {
+    // Desactivar figura
+    int reg = regionAsignada[num];
+    if (reg != -1) {
+      regionesOcupadas[reg] = false;
+      regionAsignada[num] = -1;
+    }
+    figuraActiva[num] = false;
+    println("   ← Figura desactivada");
+  } else {
+    // Activar figura
+    int libre = buscarRegionLibre();
+    if (libre != -1) {
+      figuraActiva[num] = true;
+      regionAsignada[num] = libre;
+      regionesOcupadas[libre] = true;
+      animacionTiempo[num] = millis();
+      println("   → Figura activada en región " + libre);
+    } else {
+      println("   ✗ No hay regiones libres");
+    }
+  }
+}
+
+int buscarRegionLibre() {
+  for (int i = 0; i < 4; i++) {
+    if (!regionesOcupadas[i]) return i;
+  }
+  return -1;
+}
+
+void drawShape(int figura, int region, int animStartTime) {
+  float w = width / 2.0;
+  float h = height / 2.0;
+  float cx = 0, cy = 0;
+
+  switch (region) {
+    case 0: cx = w / 2;       cy = h / 2; break;
+    case 1: cx = w + w / 2;   cy = h / 2; break;
+    case 2: cx = w / 2;       cy = h + h / 2; break;
+    case 3: cx = w + w / 2;   cy = h + h / 2; break;
+  }
+
+  float escala = 1.0;
+  int tiempoPasado = millis() - animStartTime;
+  if (tiempoPasado < duracionAnimacion) {
+    escala = map(tiempoPasado, 0, duracionAnimacion, 0, 1);
+  }
+
+  noStroke();
+  pushMatrix();
+  translate(cx, cy);
+  scale(escala);
+
+  switch (figura) {
+    case 0: // Círculo
+      fill(100, 150, 255, 255);
+      ellipse(0, 0, 250, 250);
+      break;
+    case 1: // Cuadrado
+      fill(255, 100, 100, 255);
+      rectMode(CENTER);
+      rect(0, 0, 250, 250);
+      break;
+    case 2: // Triángulo
+      fill(100, 255, 150, 255);
+      triangle(0, -150, -125, 100, 125, 100);
+      break;
+    case 3: // Rombo
+      fill(200, 100, 255, 255);
+      beginShape();
+      vertex(0, -150);
+      vertex(125, 0);
+      vertex(0, 150);
+      vertex(-125, 0);
+      endShape(CLOSE);
+      break;
+  }
+
+  popMatrix();
+}
+
+boolean verificarChanchoVa() {
+  int[] contadorPorTipo = new int[4];
+  for (int i = 0; i < 16; i++) {
+    if (figuraActiva[i]) {
+      contadorPorTipo[tipoFigura[i]]++;
+    }
+  }
+  for (int i = 0; i < 4; i++) {
+    if (contadorPorTipo[i] == 4) { 
+      //mediaplayer PARA UN AUDIO CUANDO SEA "CHANCHO VA"
+      return true;
+    }
+  }
+  return false;
+}
+
+int contarRegionesOcupadas() {
+  int count = 0;
+  for (int i = 0; i < 4; i++) {
+    if (regionesOcupadas[i]) count++;
+  }
+  return count;
+}
+
+void mostrarCartelInicio() {
+  // Fondo semi-transparente en el centro
+  fill(0, 0, 0, 200);
+  rectMode(CENTER);
+  noStroke();
+  rect(width / 2, height / 2, width - 40, 100);
+  
+  // Texto
+  fill(255, 255, 100);
+  textAlign(CENTER, CENTER);
+  textSize(24);
+  stroke(0);
+  strokeWeight(2);
+  text("ESCANEAR TARJETA HASTA COMPLETAR\nLOS CUATRO LUGARES", width / 2, height / 2);
+  noStroke();
+}
+
+void mostrarCartelChanchoVa() {
+  // Calcular el efecto de rebote/zoom
+  int tiempoTranscurrido = millis() - tiempoChanchoVa;
+  float escala = 1.0;
+  
+  // Animación de rebote durante los primeros 800ms
+  if (tiempoTranscurrido < 800) {
+    // Rebote: crece rápido, luego se estabiliza
+    float progreso = tiempoTranscurrido / 800.0;
+    escala = 0.5 + 0.5 * progreso + 0.3 * sin(progreso * PI * 3); // Efecto rebote
+  }
+  
+  // Parpadeo después del rebote
+  if (tiempoTranscurrido > 800) {
+    if (millis() - tiempoUltimoParpadeo > intervaloParpadeo) {
+      parpadeoVisible = !parpadeoVisible;
+      tiempoUltimoParpadeo = millis();
+    }
+  } else {
+    parpadeoVisible = true; // Siempre visible durante el rebote
+  }
+
+  if (parpadeoVisible) {
+    pushMatrix();
+    translate(width / 2, height / 2);
+    scale(escala);
+    
+    // Fondo para el texto
+    fill(0, 0, 0, 220);
+    rectMode(CENTER);
+    noStroke();
+    rect(0, 0, 500, 120);
+    
+    // Texto
+    fill(255, 255, 0);
+    textAlign(CENTER, CENTER);
+    textSize(64);
+    stroke(255, 0, 0);
+    strokeWeight(4);
+    text("CHANCHO VA", 0, 0);
+    noStroke();
+    
+    popMatrix();
+  }
+}
+
+void mostrarDebug(int figurasActivas) {
+  // Panel de debug más pequeño en la esquina inferior izquierda
+  fill(0, 0, 0, 180);
+  noStroke();
+  rectMode(CORNER);
+  rect(5, height - 30, 150, 25);
+  
+  fill(0, 255, 0);
+  textAlign(LEFT, TOP);
+  textSize(12);
+  text("Chancho Va: " + (chanchoVaMostrado ? "SÍ" : "NO"), 10, height - 25);
+}
+
+void reiniciarJuego() {
+  for (int i = 0; i < 16; i++) {
+    figuraActiva[i] = false;
+    regionAsignada[i] = -1;
+  }
+}
+
+void keyPressed() {
+  // Presiona D para activar/desactivar modo debug
+  if (key == 'd' || key == 'D') {
+    DEBUG_MODE = !DEBUG_MODE;
+    println("Debug mode: " + DEBUG_MODE);
+  }
+  
+  // Presiona R para reiniciar manualmente
+  if (key == 'r' || key == 'R') {
+    reiniciarJuego();
+    chanchoVaMostrado = false;
+    for (int i = 0; i < 4; i++) {
+      regionesOcupadas[i] = false;
+    }
+    println("=== REINICIO MANUAL ===");
+  }
+}
